@@ -1,0 +1,205 @@
+---
+title: "Human Activity Recognition - Analysis of Weight Lifting Exercise"
+author: "Chris Shaw"
+date: "22 July 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, fig.width = 6, fig.height = 6)
+knitr::opts_chunk$set(root.dir="..")
+knitr::knit_hooks$set(inline = function(x) {
+  prettyNum(x, big.mark=",")
+})
+setwd("..")
+#print(getwd())
+library(knitr)
+# initialise analysis
+library('ProjectTemplate')
+load.project()
+```
+
+
+```{r runanalysis, warning=FALSE, message=FALSE}
+# Note to Reviewers:
+#
+# This analysis was organised using ProjectTemplate as it was way to large to store
+# in this report document.  However all the key code chunks are reproduced in the
+# html Appendix.  You can also view the full analysis repository here if you wish:
+#
+# https://github.com/connectedblue/datascience/tree/master/machine_learning/pmlproject
+#
+# The README explains how the files are organised
+
+
+# run the analysis code to generate the objects
+
+source('../src/rf-model-caret.R') 
+```
+
+# Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices enable people to quantify how much of a particular activity they do, but rarely how well they do it. 
+
+This is an active research are and we are grateful to Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; and Fuks, H for their paper [Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013](http://groupware.les.inf.puc-rio.br/har) and the dataset used in this analysis.
+
+This paper analyses a series of  Weight Lifting Exercises carried out by six young health participants who were fitted with a number of such devices.  They performed one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions:
+
+* ***Class A*** exactly in accordance with the specification
+* ***Class B*** throwing the elbows to the front 
+* ***Class C*** lifting the dumbbell only halfway 
+* ***Class D*** lowering the dumbbell only halfway 
+* ***Class E*** throwing the hips to the front
+
+Class A corresponds to the specified execution of the exercise, while the other 4 classes correspond to common mistakes.  Measurement data was collected from accelerometers on the belt, forearm, arm, and dumbbell.
+
+A training dataset has been provided which contains the measurement data and the associated class response.  The goal of this analysis is to predict the manner in which participants did the exercise using any of the other variables to predict with. We will describe how the model is built, how cross validation is used, what the expected out of sample error is, and why various choices were made. 
+
+Finally the prediction model will be used to predict 20 different test cases, supplied in a testing set (whose A-E classification is unknown to the author). These will be submitted in the appropriate format for automated checking.
+
+All the R code used in this analysis is reproduced in the Appendix.
+
+# Exploratory Analysis
+
+The training dataset contains `r dim(pml.training)[1]` observation samples and `r dim(pml.training)[2]` columns (the last column **classe** is the outcome). 
+
+The initial investigation into the training data revealed the following structure.
+
+* first 7 columns are identification variables, which determine when and to whom each observation applies.
+* The next 152 columns contain measurement data from the devices worn by the participants.  Some of these contained string representations of numbers, so these were converted to numeric.
+* The final column is the outcome variable, ***classe***, which we are trying to predict on the testing set
+* The testing set was checked to ensure all the columns had the same name and structure.  The only difference in the testing set is that the ***classe*** variable was set to values 1 to 20.  These will be replaced by the predicted values after the analysis.
+
+The following table shows how the data is distributed amongst participants:
+
+```{r trainingsummary}
+# Create a table from the appropriate columns in the training summary data
+table_contents<-training_summary[c("start_time", "user_name", "exercise_time", "samples","classe")]
+
+# Add a total row at the bottom
+table_contents<-rbind(as.matrix(table_contents), c("Total","", "",
+                                                   sum(training_summary$samples), ""))
+#Print the table
+kable(table_contents,
+      row.names = FALSE, col.names = c("Date/time of Exercise", "Participant",
+                                       "Time taken (secs)", "Samples Collected", "Class"),
+      caption = "Summary of the Weight Lifting training dataset",
+      align = c("l", "c", "c","r","c"),
+      format.args = list(big.mark=","))
+```
+
+The structure of the dataset can be clearly seen.  Each participant performed exercises A to E in order and with no significant break between.  Several hundred samples were taken for each one, depending on the length of each exercise.  Most measurements are sampled several times a second, although certain ones only once per second (see section below about missing values)
+
+## Transforming the training set
+
+We can see that the participant name and the date of exercise is not related to the outcome class.  The rows are collected in time order, so there's a possibility of a time series connection,  however we assumed not.  So for the subsequent analysis we removed the first seven columns. 
+
+The next task was to examine the number of missing values **NA** in the remaining columns. The following table shows how many columns have missing values, and how many missing values there are.
+
+```{r nacounts}
+# Contruct a frequency table of how many NAs are in the columns
+na_tab<-cbind(data.frame(c("NA Count", "Number of columns")),t(count(na_sum)))
+names(na_tab)<-rep("&nbsp;", ncol(na_tab))
+kable(na_tab, row.names = FALSE,  format.args = list(big.mark = ','))
+```
+
+We can see that there are `r na_tab[2,2]` columns with no missing values at all.  Of the remainder, the vast majority of observations are missing.  These relate to measurements that can only be taken once per second, and it is not immediately obvious how they could be imputed across all samples.
+
+We decided to ignore these columns also in the analysis, and keep only the `r na_tab[2,2]` complete columns.  If the modelling had failed, we could revisit this assumption and look more deeply into these predictors.
+
+The code for these transformations is in the appendix.  
+
+## Creation of new training and transformation sets
+
+In order to train a model and test it, the transformed training data was further partitioned on the ***classe*** variable into training and testing sets, in the proportion `r 100*train_split`:`r 100*(1-train_split)`.  
+
+The training set was used to train the model and the testing set was set aside to verify its accuracy.
+
+# Building the Model
+
+The large number of variables makes it impossible to see any simple relationships using plots, so linear regression models were rejected straight away.  We then performed informal models using trees and random forests.  The initial results showed around 52% accuracy for trees and greater than 99% for random forests.  We therefore made a decision to use random forests, and set about tuning the model for maximum accuracy.
+
+In order to train the random forest, we deployed parameter tuning and cross validation techniques to obtain greater accuracy on the training set.  The parameter which has most effect is **mtry**, which is the number of variables randomly sampled at each tree split.  In addition, we selected 5-fold cross validation to average model predictions five times over different random selections of the data.
+
+
+# Results
+
+The following graph shows the averged accuracy for each value of the **mtry** parameter used in the training.  The value `r caretrf_mod$bestTune` was selected for the final model.
+
+```{r plottuning, fig.width = 10, fig.height = 6}
+par(bg="cornsilk")
+plot(caretrf_mod, main="Comparison of accuracy for different mtry")
+```
+
+In addition, it is interesting to determine which of the many accelerometer measurements are most important in the prediction model.  The following plot shows the most important predictors that contribute to the model accuracy.
+
+```{r plotimpvars, fig.width = 10, fig.height = 6}
+par(bg="cornsilk")
+varImpPlot(caretrf_mod$finalModel, n.var=15, main="15 most important predictive variables\n in the Random Forest model", type=1,
+            bg="mediumblue")
+```
+
+# Accuracy prediction
+
+
+The final model predicts an an accuracy of `r round(max(caretrf_mod$results[,2])*100,2)`% from the training set.  This means that the out of sample error rate is `r round(100-max(caretrf_mod$results[,2])*100,2)`%.
+
+This was tested against the test set which was held back during training (`r nrow(testing)` samples - about 30% of the original).  The following table shows how the model predicted the class of those samples, compared to the actual values:
+
+
+```{r testingtable}
+kable(caretrf_testing_result$table,
+      caption="Rows contain the predicted response, columns show the actual response in the testing set")
+```
+
+It can be seen that the model performed well on the testing set - almost all predictions lie on the diagonal, with a just few observations mis-predicted.  This suggests a mean accuracy of `r round(max(caretrf_testing_result$overall["Accuracy"])*100,2)`%  with a 95% confidence interval of [`r round(max(caretrf_testing_result$overall["AccuracyLower"])*100,2)`, `r round(max(caretrf_testing_result$overall["AccuracyUpper"])*100,2)`]
+
+
+
+
+# Appendix
+
+The random forest training:
+
+```{r analysis,  eval=TRUE, echo=FALSE}
+knitr::read_chunk('../src/rf-model-caret.R')
+```
+
+```{r analysis2, ref.label="analysis", eval=FALSE, echo=TRUE}
+```
+
+
+Producing the summary matrix
+
+```{r summarisetraining, eval=TRUE, echo=FALSE}
+knitr::read_chunk('../munge/01-A.R')
+```
+
+```{r summarisetraining2, ref.label="summarisetraining", eval=FALSE, echo=TRUE}
+```
+
+
+
+The initial cleaning routine:
+
+```{r clean, eval=TRUE, echo=FALSE, warning=FALSE}
+knitr::read_chunk('../munge/01-A.R')
+```
+
+```{r clean2, ref.label="clean", eval=FALSE, echo=TRUE}
+```
+
+
+
+
+
+Reducing the number of measurement columns (removing columns with mostly NA)
+
+```{r reduce, eval=TRUE, echo=FALSE}
+knitr::read_chunk('../munge/01-A.R')
+```
+
+```{r reduce2, ref.label="reduce", eval=FALSE, echo=TRUE}
+```
+
+
